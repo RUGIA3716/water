@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="ja">
+
+<head>
+    <meta charset="UTF-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>水</title>
+</head>
+
+<body style="background-color: black;">
+    <input type="range" id="seekbar" name="seekbar" min=-120 max=120 step=1 style="width:800px;" onseeking="change_seek(this)">
+    <label id="seekbar_value" style="color: blue"></label>
+    <canvas id="canvas" width="960" height="900"></canvas>
+</body>
+<script>
+    // 物理計算を毎回行ってもよいが、それでは負荷がかかってしまう。
+    // そのため軌跡をあらかじめ計算して配列に格納し、
+    // 毎チックごとにポインタをシフトしていくことで疑似的に再現する。
+
+    // v = gt; y = (1/2) * g * (t * t)
+    // Gravitational Acceleration
+
+    let w = 1;    // 点の横幅
+    let context;    // コンテキスト
+
+    const GA = 9.8;
+    const fps = 30;
+
+    let tick = 0;
+
+    let map = [];
+
+    const MAXHEIGHT = 900;
+    const MAXWIDTH = 800;
+
+    let x = 0; // 何個並べるかを計算する
+    let y = 0; // 縦に何個並べるかを計算する
+    let x_p;
+    let y_p;
+    let point;
+
+    let add_point_seek = 0;
+
+    window.onload = function () {
+        let canvas = document.getElementById("canvas");
+        context = canvas.getContext("2d");
+
+        let xl = 0;
+
+
+        for (let i = 0; ; ++i) {
+            x = x += 2;
+            if (x > MAXWIDTH) {
+                x = --i;
+                break;
+            }
+        }
+        let x_array_buffer = new ArrayBuffer(x * 2);
+        x_p = new Uint16Array(x_array_buffer);
+        let xb = 0;
+        for (let i = 0; i < x; ++i) {
+            xb = xb += 2;
+            x_p[i] = xb;
+        }
+        for (let i = 0; ; ++i) {
+            y = Math.floor(gravitational_accelaration_height((i / fps)));
+            if (y > MAXHEIGHT) {
+                y = --i;
+                break;
+            }
+        }
+        let y_array_buffer = new ArrayBuffer(y * 2);
+        y_p = new Uint16Array(y_array_buffer);
+        let yb = 0;
+        for (let i = 0; i < y; ++i) {
+            yb = gravitational_accelaration_height((i / fps));
+            y_p[i] = Math.floor(yb);
+        }
+        console.log(x_p);
+        console.log(y_p);
+        // [[x:0 ( 0 -> 10,000 ), y:0 ( 0 -> 10,000 ), p:0 ( 0 or 1)], [x:0 ( 0 -> 10,000 ), y:0 ( 0 -> 10,000 ), p:0 ( 0 or 1)]]
+        // [[x:0 ( 0 -> 10,000 ), y:0 ( 0 -> 10,000 ), p:0 ( 0 or 1)]]
+        // [[x:0 ( 0 -> 10,000 ), y:0 ( 0 -> 10,000 ), p:0 ( 0 or 1)]]
+        // [[x:0 ( 0 -> 10,000 ), y:0 ( 0 -> 10,000 ), p:0 ( 0 or 1)]]
+        // ... n ( 0 -> 256 or > 1,000)
+
+        // ((2byte + 2byte + 1byte) * height_num) * width_num
+
+        // x座標, y座標を共通データとして共有する
+        // [[p:0 ( 0 or 1)], [p:0 ( 0 or 1)]]
+
+        // (1bit + 1bit + 1bit ... ) * width_num
+        // -> おそらくそれぞれを扱うために変換する処理に時間がかかるためbyte処理を行う
+        // (1byte + 1byte + 1byte ... ) * width_num
+
+        // x : [x: ( 0 -> 10,000 ), x: ( 0 -> 10,000 ), x: ( 0 -> 10,000 )]
+        // y : [y: ( 0 -> 10,000 ), y: ( 0 -> 10,000 ), y: ( 0 -> 10,000 )]
+
+        let point_buffer = new ArrayBuffer(x * y);
+        point = new Uint8Array(point_buffer)
+        console.log(point);
+
+        setInterval(run, 8);
+
+    }
+    function shift_y() {
+        for (let i = x * y - 1; i >= 0; --i) {
+            // Y方向の末尾は消してシフトもしない
+            if (i % y == y - 1) {
+                point[i] = 0;
+                continue;
+            }
+            point[i + 1] = point[i];
+            // Y方向の先頭は消す シフトはする
+            if (i % y == 0) {
+                point[i] = 0;
+            }
+        }
+    }
+    let seekbar = document.getElementById('seekbar');
+    seekbar.addEventListener('input', (event) => {
+        change_seek(seekbar.value);
+    });
+    function change_seek(value){
+        add_point_seek = parseInt(value);
+        document.getElementById('seekbar_value').innerText = add_point_seek;
+    }
+    function add_x(add_x) {
+        if((y + add_point_seek) * add_x >= x * y){
+            return;
+        }
+        point[(y + add_point_seek) * add_x] = 1;
+    }
+
+    let count = 0;
+    let count_x = 0;
+    function run() {
+        context.clearRect(0, 0, context.canvas.clientWidth, context.canvas.clientHeight);
+        ++count;
+        if (count >= y) {
+            count = 0;
+        }
+        ++count_x;
+        if (count_x >= x) {
+            count_x = 0;
+        }
+        for (let i = 0; i < x; ++i) {
+            for (let c = 0; c < y; ++c) {
+                if (point[i * y + c]) {
+                    drawpoint(x_p[i], y_p[c]);
+                }
+            }
+        }
+        shift_y();
+        add_x(count_x);
+
+        ++tick;
+
+    }
+    function gravitational_accelaration_height(t) {
+        return 0.5 * GA * t * t;
+    }
+
+
+    // 点の描画
+    function drawpoint(x, y) {
+        x = Math.floor(x);
+        y = Math.floor(y) + w;
+        context.fillStyle = "black";
+        context.beginPath();
+        context.arc(x, y, w, 0, Math.PI * 2, true);
+        context.fillStyle = 'rgb(150, 90, 200)';
+        context.fill();
+        // context.strokeStyle = 'rgb(150, 90, 200)';
+        // context.lineWidth = 2;
+        // context.stroke();
+    }
+    // 点の消去
+    function clearRectangle() {
+        context.clearRect(x, y, w, h);
+    }
+
+</script>
+
+</html>
