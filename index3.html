@@ -12,8 +12,13 @@
     <input type="range" id="seekbar" name="seekbar" min=-120 max=120 step=1 style="width:800px;"
         onseeking="change_seek(this)">
     <label id="seekbar_value" style="color: blue"></label>
-    <canvas id="canvas" width="1900" height="900" style="border: 1px solid white;"></canvas>
-    <button id="mode">お絵描きモード</button>
+    <canvas id="canvas" width="400" height="700" style="border: 1px solid white;"></canvas>
+    <br>
+    <button id="mode" onclick="change_mode(this)">お絵描きモード</button>
+    <br>
+    <button id="convert" onclick="convert()">変換</button><br>
+    <button id="convert" onclick="save()">保存</button><br>
+    <button id="convert" onclick="reset()">リセット</button><br>
 </body>
 <script>
     // 物理計算を毎回行ってもよいが、それでは負荷がかかってしまう。
@@ -27,14 +32,14 @@
     let context;    // コンテキスト
 
     const GA = 9.8;
-    const fps = 30;
+    const fps = 10;
 
     let tick = 0;
 
     let map = [];
 
-    const MAXHEIGHT = 900;
-    const MAXWIDTH = 1900;
+    const MAXHEIGHT = 700;
+    const MAXWIDTH = 400;
 
     let x = 0; // 何個並べるかを計算する
     let y = 0; // 縦に何個並べるかを計算する
@@ -44,7 +49,7 @@
 
     let add_point_seek = 0;
     let mode_element;
-    let mode = false;
+    let mode = true;
 
     let mouse_down = false;
     window.onload = function () {
@@ -108,30 +113,11 @@
             }
             return;
         });
-
-        // [[x:0 ( 0 -> 10,000 ), y:0 ( 0 -> 10,000 ), p:0 ( 0 or 1)], [x:0 ( 0 -> 10,000 ), y:0 ( 0 -> 10,000 ), p:0 ( 0 or 1)]]
-        // [[x:0 ( 0 -> 10,000 ), y:0 ( 0 -> 10,000 ), p:0 ( 0 or 1)]]
-        // [[x:0 ( 0 -> 10,000 ), y:0 ( 0 -> 10,000 ), p:0 ( 0 or 1)]]
-        // [[x:0 ( 0 -> 10,000 ), y:0 ( 0 -> 10,000 ), p:0 ( 0 or 1)]]
-        // ... n ( 0 -> 256 or > 1,000)
-
-        // ((2byte + 2byte + 1byte) * height_num) * width_num
-
-        // x座標, y座標を共通データとして共有する
-        // [[p:0 ( 0 or 1)], [p:0 ( 0 or 1)]]
-
-        // (1bit + 1bit + 1bit ... ) * width_num
-        // -> おそらくそれぞれを扱うために変換する処理に時間がかかるためbyte処理を行う
-        // (1byte + 1byte + 1byte ... ) * width_num
-
-        // x : [x: ( 0 -> 10,000 ), x: ( 0 -> 10,000 ), x: ( 0 -> 10,000 )]
-        // y : [y: ( 0 -> 10,000 ), y: ( 0 -> 10,000 ), y: ( 0 -> 10,000 )]
-
         let point_buffer = new ArrayBuffer(x * y);
-        point = new Uint8Array(point_buffer)
+        point = new Uint8Array(point_buffer);
         console.log(point);
 
-        setInterval(run, 0);
+        setInterval(run, 8);
 
     }
     function shift_y() {
@@ -162,32 +148,41 @@
         add_point_seek = parseInt(value);
         document.getElementById('seekbar_value').innerText = add_point_seek;
     }
-    function add_x(add_x) {
-        if (mode) {
-            return;
-        }
-        if ((y + add_point_seek) * add_x >= x * y) {
-            return;
-        }
-        point[(y + add_point_seek) * add_x] = 1;
-    }
 
+    function clone_y(cy) {
+        console.log('コピー : ' + cy + '行');
+        for (let i = 0; i < x; ++i) {
+            point[(i * y)] = save_point[(i * y) + cy];
+        }
+
+    }
+    function change_mode(el) {
+        if (mode) {
+            if (typeof save_point == 'undefined') {
+                alert("鑑賞できるデータがありません。\nデータを保存してから使用してください。");
+                return;
+            }
+            mode = false;
+            el.innerText = '鑑賞モード';
+        }
+        else {
+            mode = true;
+            el.innerText = 'お絵描きモード';
+
+        }
+    }
     let count = 0;
-    let count_x = 0;
     function run() {
         if (mode) {
             return;
         }
         context.clearRect(0, 0, context.canvas.clientWidth, context.canvas.clientHeight);
-        // clearRectangle();
         ++count;
+        console.log('count : ' + count);
         if (count >= y) {
             count = 0;
         }
-        ++count_x;
-        if (count_x >= x) {
-            count_x = 0;
-        }
+        clone_y(count);
         for (let i = 0; i < x; ++i) {
             for (let c = 0; c < y; ++c) {
                 if (point[i * y + c]) {
@@ -196,16 +191,97 @@
             }
         }
         shift_y();
-        for (let i = 0; i < 100; ++i) {
-            add_x(count_x % i);
-        }
-
         ++tick;
+
+    }
+    function run_convert() {
+        if (!mode) {
+            return;
+        }
+        context.clearRect(0, 0, context.canvas.clientWidth, context.canvas.clientHeight);
+        for (let i = 0; i < x; ++i) {
+            for (let c = 0; c < y; ++c) {
+                if (point_draw[i * y + c]) {
+                    drawpoint(x_p[i], y_p[c]);
+                }
+            }
+        }
 
     }
     function gravitational_accelaration_height(t) {
         return 0.5 * GA * t * t;
     }
+
+    function convert() {
+        if (typeof point_draw == 'undefined') {
+            let point_buffer = new ArrayBuffer(x * y);
+            point_draw = new Uint8Array(point_buffer);
+        }
+        if (mode == true) {
+            console.log(buffer_draw_x);
+            for (; ;) {
+                if (buffer_draw_x.length == 0) {
+                    break;
+                }
+                change_near_point(buffer_draw_x.shift(), buffer_draw_y.shift());
+            }
+            context.clearRect(0, 0, context.canvas.clientWidth, context.canvas.clientHeight);
+            run_convert();
+        } else {
+            alert('お絵描きモードのときのみ変換できます。');
+        }
+    }
+    function reset() {
+        for (let ix = 0; ix < x - 1; ++ix) {
+            for (let iy = 0; iy < y; ++iy) {
+                point_draw[(ix * y) + iy] = 0;
+            }
+        }
+        run_convert();
+    }
+    let save_point;
+    /**
+     * データの保存を行う。
+    */
+    function save() {
+        let point_buffer = new ArrayBuffer(x * y);
+        save_point = new Uint8Array(point_buffer);
+        for (let ix = 0; ix < x - 1; ++ix) {
+            for (let iy = 0; iy < y; ++iy) {
+                save_point[(ix * y) + (y - iy)] = point_draw[(ix * y) + iy];
+            }
+        }
+    }
+    let buffer_draw_x = [];
+    let buffer_draw_y = [];
+    let point_draw;
+
+    function change_near_point(dx, dy) {
+        let near_x_p = 0;
+        for (let i = 0; i < x - 1; ++i) {
+            if (x_p[i] <= dx && dx < x_p[i + 1]) {
+                near_x_p = i;
+                break;
+            }
+        }
+        let near_y_p = 0;
+        for (let i = 0; i < y; ++i) {
+            if (y_p[i] <= dy && dy < y_p[i + 1]) {
+                near_y_p = i;
+                break;
+            }
+        }
+        point_draw[near_x_p * y + near_y_p] = 1;
+    }
+
+
+
+
+
+
+
+
+
 
     let buffer_x = [];
     let buffer_y = [];
@@ -215,7 +291,7 @@
         // buffer_y.push(dy);
         context.beginPath();
         //context.fillStyle = 'rgb(150, 90, 200)';
-        context.fillStyle = 'rgb(' + (dy / 3) +' , 90, '+ (255 - (dx / 8)) + ')';
+        context.fillStyle = 'rgb(' + (dy / 3) + ' , 90, ' + (255 - (dx / 8)) + ')';
         //context.strokeStyle = 'rgb(150, 90, 200)';
         context.fillRect(dx, dy, w, w);
         context.stroke();
@@ -232,8 +308,6 @@
             if (buffer_x.length == 0) {
                 break;
             }
-            // let dx = buffer_x.shift();
-            // let dy = buffer_y.shift();
             context.beginPath();
             //context.arc(dx, dy, w, 0, Math.PI * 2, true);
             context.fillStyle = 'rgb(0, 0, 0)';
@@ -246,17 +320,24 @@
         } while (true);
     }
     function draw_point(dx, dy) {
-        // buffer_x.push(dx);
-        // buffer_y.push(dy);
-        context.fillStyle = "black";
-        context.beginPath();
-        context.fillStyle = 'rgb(150, 90, 200)';
-        context.strokeStyle = 'rgb(150, 90, 200)';
-        context.fillRect(dx, dy, w, w);
-        context.stroke();
-        // context.arc(dx, dy, w, 0, Math.PI * 2, true);
-        // context.fillStyle = 'rgb(200, 130, 250)';
-        // context.fill();
+        let db = dx;
+        for (let i = 0; i < 10; ++i) {
+            dx = db;
+            ++dy;
+            for (let j = 0; j < 10; ++j) {
+                ++dx;
+                context.beginPath();
+                context.fillStyle = 'rgb(150, 90, 200)';
+                context.strokeStyle = 'rgb(150, 90, 200)';
+                context.fillRect(dx, dy, w, w);
+                context.stroke();
+                // context.arc(dx, dy, w, 0, Math.PI * 2, true);
+                // context.fillStyle = 'rgb(200, 130, 250)';
+                // context.fill();
+                buffer_draw_x.push(dx);
+                buffer_draw_y.push(dy);
+            }
+        }
     }
 </script>
 
