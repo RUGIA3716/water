@@ -1,0 +1,466 @@
+<!DOCTYPE html>
+<html lang="ja">
+
+<head>
+    <meta charset="UTF-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>水</title>
+</head>
+
+<body style="background-color: black; scale: 1.0">
+    <canvas id="canvas" width="400" height="700" style="border: 1px solid white;"></canvas>
+    <br>
+    <br>
+    <input type="range" id="seekbar" name="seekbar" min=-120 max=120 step=1 style="width:800px;"
+        onseeking="change_seek(this)">
+    <label id="seekbar_value" style="color: blue"></label>
+    <br>
+    <button id="mode" onclick="change_mode(this)">お絵描きモード</button>
+    <button id="convert" onclick="relative_convert()">相対変換(一枚絵用)</button>
+    <button onclick="absolute_convert()">絶対変換(流し見)</button>
+    <button id="convert" onclick="save()">保存</button>
+    <button id="convert" onclick="reset()">リセット</button>
+    <br>
+    <textarea readonly id="display_log" style="width:500px; height:100px;"></textarea>
+    <br>
+    <button onclick="pre_rendering()">プリレンダリング</button>
+    <label hidden id="pre_rendering_alert">レンダリング中</label>
+    <button onclick="play_rendered_memory()">再生</button>
+
+</body>
+<script>
+    // プリレンダリング追加
+    // 保存機能
+    // localStorage.setItem('キー', '値');
+    let w = 1;    // 点の大きさ
+
+    const GA = 9.8 + 1.0;
+    const fps = 30;
+
+    let tick = 0;
+
+    let map = [];
+
+    const MAXHEIGHT = 1080 * 2;
+    const MAXWIDTH = 1920 * 2;
+    const canvas = document.getElementById('canvas');
+    const context = canvas.getContext("2d");
+    canvas.width = MAXWIDTH;
+    canvas.height = MAXHEIGHT;
+
+    let x = 0; // 何個並べるかを計算する
+    let y = 0; // 縦に何個並べるかを計算する
+    let x_p;
+    let y_p;
+    let point;
+
+    let add_point_seek = 0;
+    const mode_element = document.getElementById('mode');
+    let mode = true;
+
+    let width_threshold = w;
+
+    let mouse_down = false;
+
+    const log_element = document.getElementById('display_log');
+
+    function add_log(str) {
+        log_element.value = str + '\n' + log_element.value;
+    }
+
+    window.onload = function () {
+        add_log('初期化中...');
+        add_log('マップ初期化');
+        add_log('X座標初期化');
+        x = Math.floor(MAXWIDTH / width_threshold);
+
+        x_p = new Uint16Array(new ArrayBuffer(x * 2));
+
+        let xb = 0;
+        for (let i = 0; i < x; ++i) {
+            xb = xb += width_threshold;
+            x_p[i] = xb;
+        }
+        add_log('Y座標初期化');
+        y = Math.floor(Math.pow((MAXHEIGHT * 2) / GA, 0.5) * fps);
+
+        y_p = new Uint16Array(new ArrayBuffer(y * 2));
+        let yb = 0;
+        for (let i = 0; i < y; ++i) {
+            yb = gravitational_accelaration_height((i / fps));
+            y_p[i] = Math.floor(yb);
+        }
+
+        canvas.addEventListener("mousedown", (e) => {
+            let x = e.offsetX;
+            let y = e.offsetY;
+            draw_point(x, y);
+            mouse_down = true;
+            return;
+        });
+        canvas.addEventListener("mousemove", (e) => {
+            if (mouse_down) {
+                let x = e.offsetX;
+                let y = e.offsetY;
+                draw_point(x, y);
+            }
+            return;
+        });
+        canvas.addEventListener("mouseup", (e) => {
+            if (mouse_down) {
+                mouse_down = false;
+            }
+            return;
+        });
+
+        let point_buffer = new ArrayBuffer(x * y);
+        point = new Uint8Array(point_buffer);
+        setInterval(run, 0);
+        add_log('初期化完了');
+
+    }
+
+    let seekbar = document.getElementById('seekbar');
+    seekbar.addEventListener('input', (event) => {
+        change_seek(seekbar.value);
+    });
+    function change_seek(value) {
+        if (mode) {
+            return;
+        }
+        add_point_seek = parseInt(value);
+        document.getElementById('seekbar_value').innerText = add_point_seek;
+    }
+
+    function clone_y(cy) {
+        let by = [];
+        for (let i = 0; i < x; ++i) {
+            point[(i * y)] = save_point[(i * (absolute_draw_mode ? absolute_y : y)) + cy];
+        }
+
+    }
+    function change_mode(el) {
+        if (mode) {
+            if (typeof save_point == 'undefined') {
+                alert("鑑賞できるデータがありません。\nデータを保存してから使用してください。");
+                return;
+            }
+            mode = false;
+            el.innerText = '鑑賞モード';
+        }
+        else {
+            mode = true;
+            el.innerText = 'お絵描きモード';
+
+        }
+    }
+    let count = 0;
+    function shift_y() {
+        for (let i = Math.floor(x * y - 1); i >= 0; --i) {
+            // Y方向の末尾は消してシフトもしない
+            if (i % y == y - 1) {
+                point[i] = 0;
+                continue;
+            }
+            point[i + 1] = point[i];
+
+            // Y方向の先頭は消す シフトはする
+            if (i % y == 0) {
+                point[i] = 0;
+            }
+        }
+    }
+    function run() {
+        if (mode) {
+            return;
+        }
+        context.clearRect(0, 0, context.canvas.clientWidth, context.canvas.clientHeight);
+        ++count;
+        if (count >= (absolute_draw_mode ? absolute_y : y)) {
+            count = 0;
+        }
+        shift_y();
+        clone_y(count);
+        for (let i = 0; i < x; ++i) {
+            for (let c = 0; c < y; ++c) {
+                if (point[i * y + c]) {
+                    drawpoint(x_p[i], y_p[c]);
+                }
+            }
+        }
+        ++tick;
+
+    }
+    function run_convert() {
+        if (!mode) {
+            return;
+        }
+        context.clearRect(0, 0, context.canvas.clientWidth, context.canvas.clientHeight);
+        let bw = w;
+        w = 1;
+        for (let i = 0; i < x; ++i) {
+            for (let c = 0; c < (absolute_draw_mode ? absolute_y : y); ++c) {
+                if (point_draw[i * (absolute_draw_mode ? absolute_y : y) + c]) {
+                    if (absolute_draw_mode) {
+                        drawpoint(x_p[i], c);
+                    }
+                    else {
+                        drawpoint(x_p[i], y_p[c]);
+                    }
+                }
+            }
+        }
+        w = bw;
+
+    }
+    function gravitational_accelaration_height(t) {
+        return 0.5 * GA * t * t;
+    }
+
+    function relative_convert() {
+        if (typeof point_draw == 'undefined') {
+            let point_buffer = new ArrayBuffer(x * y);
+            point_draw = new Uint8Array(point_buffer);
+        }
+        if (mode == true) {
+            for (; ;) {
+                if (buffer_draw_x.length == 0) {
+                    break;
+                }
+                change_near_point(buffer_draw_x.shift(), buffer_draw_y.shift());
+            }
+            context.clearRect(0, 0, context.canvas.clientWidth, context.canvas.clientHeight);
+            run_convert();
+        } else {
+            alert('お絵描きモードのときのみ変換できます。');
+        }
+    }
+    let absolute_draw_mode = false;
+    let absolute_y;
+    function absolute_convert() {
+        if (typeof point_draw == 'undefined') {
+            let point_buffer = new ArrayBuffer(x * MAXHEIGHT);
+            point_draw = new Uint8Array(point_buffer);
+            absolute_y = MAXHEIGHT;
+            absolute_draw_mode = true;
+        }
+        if (mode == true) {
+            for (; ;) {
+                if (buffer_draw_x.length == 0) {
+                    break;
+                }
+                change_point(buffer_draw_x.shift(), buffer_draw_y.shift());
+            }
+            context.clearRect(0, 0, context.canvas.clientWidth, context.canvas.clientHeight);
+            run_convert();
+        } else {
+            alert('お絵描きモードのときのみ変換できます。');
+        }
+    }
+    function reset() {
+        for (let ix = 0; ix < x; ++ix) {
+            for (let iy = 0; iy < y; ++iy) {
+                point_draw[(ix * y) + iy] = 0;
+            }
+        }
+        run_convert();
+    }
+    let save_point;
+    /**
+     * データの保存を行う。
+    */
+    function save() {
+        let point_buffer = new ArrayBuffer(x * (absolute_draw_mode ? absolute_y : y));
+        save_point = new Uint8Array(point_buffer);
+        for (let ix = 0; ix < x; ++ix) {
+            for (let iy = 0; iy < (absolute_draw_mode ? absolute_y : y); ++iy) {
+                save_point[(ix * (absolute_draw_mode ? absolute_y : y)) + ((absolute_draw_mode ? absolute_y : y) - iy)] = point_draw[(ix * (absolute_draw_mode ? absolute_y : y)) + iy];
+            }
+        }
+    }
+    let buffer_draw_x = [];
+    let buffer_draw_y = [];
+    let point_draw;
+
+    function change_near_point(dx, dy) {
+        let near_x_p = 0;
+        for (let i = 0; i < x - 1; ++i) {
+            if (x_p[i] <= dx && dx < x_p[i + 1]) {
+                near_x_p = i;
+                break;
+            }
+        }
+        let near_y_p = 0;
+        for (let i = 0; i < y; ++i) {
+            if (y_p[i] <= dy && dy < y_p[i + 1]) {
+                near_y_p = i;
+                break;
+            }
+        }
+        point_draw[near_x_p * y + near_y_p] = 1;
+    }
+    function change_point(dx, dy) {
+        let near_x_p = 0;
+        for (let i = 0; i < x - 1; ++i) {
+            if (x_p[i] <= dx && dx < x_p[i + 1]) {
+                near_x_p = i;
+                break;
+            }
+        }
+        point_draw[near_x_p * (absolute_draw_mode ? absolute_y : y) + dy] = 1;
+    }
+
+    // 1回目の開始部分のみ記録
+    let first_rendering_buffer = [];
+    // 2回目以降の繰り返し部分は重なっているので別途記録
+    let rendering_buffer = [];
+    let cycle_flag = false;
+    /**
+     * プリレンダリングを行う
+    */
+    function pre_rendering() {
+        // 初期化
+        first_rendering_buffer = [];
+        rendering_buffer = [];
+
+        add_log('プリレンダリング開始');
+        setTimeout(pre_rendering_run, 0, 0)
+    }
+    function add_x(add_x) {
+        if ((y) * add_x >= x * y) {
+            return;
+        }
+        point[(y) * add_x] = 1;
+    }
+    let randam_seeder = 0;
+    function pre_rendering_run(count) {
+        add_log('プリレンダリング中 ... ' + count);
+        // 一周したかどうかの判定
+        if (false && count >= (absolute_draw_mode ? absolute_y : y)) {
+            count = 0;
+            if (cycle_flag) {
+                // 2週目に入った場合は終了
+                add_log('初回起動分レンダリング数 : ' + first_rendering_buffer.length);
+                add_log('二重再生分レンダリング数 : ' + rendering_buffer.length);
+
+                return;
+            }
+            cycle_flag = true;
+        }
+        // マップシフト
+        shift_y();
+        // データの取得
+        clone_y(count);
+        // レンダリング
+        context.clearRect(0, 0, context.canvas.clientWidth, context.canvas.clientHeight);
+        for (let i = 0; i < x; ++i) {
+            for (let j = 0; j < y; ++j) {
+                if (point[i * y + j]) {
+                    drawpoint(x_p[i], y_p[j]);
+                }
+            }
+        }
+
+        for (let i = 0; i < 20; ++i) {
+            add_x(i * randam_seeder % MAXWIDTH);
+        }
+        ++randam_seeder;
+        // add_x(count);
+        // 記録
+        if (cycle_flag == false) {
+            // first_rendering_buffer.push(context.getImageData(0, 0, MAXWIDTH - w, MAXHEIGHT - w));
+        }
+        else {
+            // rendering_buffer.push(context.getImageData(0, 0, MAXWIDTH - w, MAXHEIGHT - w));
+        }
+        setTimeout(pre_rendering_run, 0, ++count);
+    }
+    function play_rendered_memory() {
+        if (first_rendering_buffer.length == 0) {
+            alert('レンダリングされたデータがありません。\nプレレンダリングを押してから実行してください。');
+        }
+        add_log('レンダリング済みのデータを再生します。');
+        let first_play = false;
+        setTimeout(run_pre_rendering, 16, 0, true);
+    }
+    function run_pre_rendering(counter, first_flag) {
+        if (first_flag) {
+            add_log('初回再生 : ' + counter);
+            context.putImageData(first_rendering_buffer[counter], 0, 0);
+            if (counter + 1 >= first_rendering_buffer.length) {
+                counter = 0;
+                first_flag = false;
+            }
+        }
+        else {
+            add_log('二重再生 : ' + counter);
+            context.putImageData(rendering_buffer[counter], 0, 0);
+            if (counter + 1 >= rendering_buffer.length) {
+                counter = 0;
+            }
+        }
+        setTimeout(run_pre_rendering, 8, ++counter, first_flag);
+    }
+
+
+
+
+
+
+    let buffer_x = [];
+    let buffer_y = [];
+    // 点の描画
+    function drawpoint(dx, dy) {
+        // buffer_x.push(dx);
+        // buffer_y.push(dy);
+        context.beginPath();
+        //context.fillStyle = 'rgb(150, 90, 200)';
+        context.fillStyle = 'rgb(' + (dy / 3) + ' , 90, ' + (255 - (dx / 8)) + ')';
+        //context.strokeStyle = 'rgb(150, 90, 200)';
+        context.fillRect(dx, dy, w, w);
+        context.stroke();
+
+        // context.arc(dx, dy, w, 0, Math.PI * 2, true);
+        // context.fillStyle = 'rgb(200, 130, 250)';
+        // context.fill();
+        // context.lineWidth = 2;
+        // context.stroke();
+    }
+    // 点の消去
+    function clearRectangle() {
+        do {
+            if (buffer_x.length == 0) {
+                break;
+            }
+            context.beginPath();
+            //context.arc(dx, dy, w, 0, Math.PI * 2, true);
+            context.fillStyle = 'rgb(0, 0, 0)';
+            context.strokeStyle = 'rgb(0, 0, 0)';
+            context.fillRect(dx, dy, w, w);
+            context.stroke();
+
+            // context.fillStyle = 'rgb(0, 0, 0)';
+            // context.fill();
+        } while (true);
+    }
+    function draw_point(dx, dy) {
+        let db = dx;
+        for (let i = 0; i < 10; ++i) {
+            dx = db;
+            ++dy;
+            for (let j = 0; j < 10; ++j) {
+                ++dx;
+                context.beginPath();
+                context.fillStyle = 'rgb(150, 90, 200)';
+                context.strokeStyle = 'rgb(150, 90, 200)';
+                context.fillRect(dx, dy, w, w);
+                context.stroke();
+                buffer_draw_x.push(dx);
+                buffer_draw_y.push(dy);
+            }
+        }
+    }
+</script>
+
+</html>
