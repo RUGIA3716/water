@@ -1,0 +1,742 @@
+<!DOCTYPE html>
+<html lang="ja">
+
+<head>
+    <meta charset="UTF-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>水</title>
+</head>
+
+<body style="background-color: white; scale: 1.0">
+    <canvas id="canvas" width="400" height="700"
+        style="border: 5px solid aqua; background-color: black; float: left;"></canvas>
+    <div style="float: left; margin-left: 20px;">
+        <br>
+        <br>
+        <label id="mode_label" style="border: 3px solid greenyellow; padding: 5px 20px 5px;">お絵描きモード</label>
+        <br>
+        <br>
+        1) 絵をマウスで描く
+        <br>
+        2) 完成したら、その絵を一枚絵として再生するか、流し見再生をするか選ぶ
+        <br>
+        <button id="convert" onclick="relative_convert()">相対変換(一枚絵用)</button>
+        <button onclick="absolute_convert()">絶対変換(流し見)</button>
+        <br>
+
+        <!--<button id="convert" onclick="save()">保存</button>-->
+        3) 再生ボタンを押す<br>
+        ※リアルタイムレンダリングを行います。動作が困難場合は下の選択を行ってください。<br>
+        <br>
+        <button id="mode" onclick="change_mode(this)">再生</button>
+        <br>
+        <br>
+        動作が重たい場合
+        <br>
+        3) プリレンダリングを押す
+        <br>
+        ※バッファレンダリングを行い、画像データの再生のみを行うため軽量です。
+        <br>
+        <button onclick="pre_rendering()">プリレンダリング</button>
+        <br>
+        <label hidden id="pre_rendering_alert">レンダリング中</label>
+        <br>
+        <textarea readonly id="display_log" style="width:500px; height:100px;"></textarea>
+        <br>
+        4) 完了を待ちます。完了後再生を押すと開始できます。
+        <br>
+
+        <button onclick="play_rendered_memory()" id="memory_mode">再生</button>
+        <br>
+        <br>
+        データリセット : 実装する価値があまりないため開発停止　リロード推奨
+        <br>
+        <button id="convert" onclick="reset()">リセット</button>
+        <br>
+        <input type="file" id="image_file">
+        <br>
+        <canvas id="red_canvas"></canvas>
+        <br>
+        <canvas id="green_canvas"></canvas>
+        <br>
+        <canvas id="blue_canvas"></canvas>
+        <br>
+        <canvas id="normal_canvas"></canvas>
+    </div>
+
+</body>
+<script>
+    // プリレンダリング追加
+    // 保存機能
+    // localStorage.setItem('キー', '値');
+    let w = 1;    // 点の大きさ
+
+    const GA = 9.8 + 1.0;
+    const fps = 30;
+
+    let tick = 0;
+
+    let map = [];
+    let size_select = 1;
+    let canvas_size = [
+        [640, 360],
+        [720, 480],
+        [1920, 1080],
+        [3840, 2160]
+    ];
+
+    const MAXHEIGHT = canvas_size[size_select][0];
+    const MAXWIDTH = canvas_size[size_select][1];
+    const canvas = document.getElementById('canvas');
+    const context = canvas.getContext("2d");
+    canvas.width = MAXWIDTH;
+    canvas.height = MAXHEIGHT;
+
+    let x = 0; // 何個並べるかを計算する
+    let y = 0; // 縦に何個並べるかを計算する
+    let x_p;
+    let y_p;
+    let point;
+
+    let add_point_seek = 0;
+    const mode_element = document.getElementById('mode');
+    let mode = true;
+
+    let width_threshold = w;
+
+    let mouse_down = false;
+
+    const log_element = document.getElementById('display_log');
+
+    function add_log(str) {
+        log_element.value = str + '\n' + log_element.value;
+    }
+
+    window.onload = function () {
+        add_log('初期化中...');
+        add_log('マップ初期化');
+        add_log('X座標初期化');
+        x = Math.floor(MAXWIDTH / width_threshold);
+
+        x_p = new Uint16Array(new ArrayBuffer(x * 2));
+
+        let xb = 0;
+        for (let i = 0; i < x; ++i) {
+            xb = xb += width_threshold;
+            x_p[i] = xb;
+        }
+        add_log('Y座標初期化');
+        y = Math.floor(Math.pow((MAXHEIGHT * 2) / GA, 0.5) * fps);
+
+        y_p = new Uint16Array(new ArrayBuffer(y * 2));
+        let yb = 0;
+        for (let i = 0; i < y; ++i) {
+            yb = gravitational_accelaration_height((i / fps));
+            y_p[i] = Math.floor(yb);
+        }
+
+        canvas.addEventListener("mousedown", (e) => {
+            let x = e.offsetX;
+            let y = e.offsetY;
+            draw_point(x, y);
+            mouse_down = true;
+            return;
+        });
+        canvas.addEventListener("mousemove", (e) => {
+            if (mouse_down) {
+                let x = e.offsetX;
+                let y = e.offsetY;
+                draw_point(x, y);
+            }
+            return;
+        });
+        canvas.addEventListener("mouseup", (e) => {
+            if (mouse_down) {
+                mouse_down = false;
+            }
+            return;
+        });
+
+        let point_buffer = new ArrayBuffer(x * y);
+        point = new Uint8Array(point_buffer);
+        setInterval(run, 0);
+        add_log('初期化完了');
+
+    }
+
+    function clone_y(cy) {
+        let by = [];
+        for (let i = 0; i < x; ++i) {
+            point[(i * y)] = save_point[(i * (absolute_draw_mode ? absolute_y : y)) + cy];
+        }
+
+    }
+
+    function change_mode(el) {
+        if (mode) {
+            if (typeof save_point == 'undefined') {
+                alert("鑑賞できるデータがありません。\nデータを保存してから使用してください。");
+                return;
+            }
+            mode = false;
+            el.innerText = '停止';
+        }
+        else {
+            mode = true;
+            el.innerText = '再生';
+
+        }
+    }
+
+    let count = 0;
+    function shift_y() {
+        for (let i = Math.floor(x * y - 1); i >= 0; --i) {
+            // Y方向の末尾は消してシフトもしない
+            if (i % y == y - 1) {
+                point[i] = 0;
+                continue;
+            }
+            point[i + 1] = point[i];
+
+            // Y方向の先頭は消す シフトはする
+            if (i % y == 0) {
+                point[i] = 0;
+            }
+        }
+    }
+
+    function run() {
+        if (mode) {
+            return;
+        }
+        context.clearRect(0, 0, context.canvas.clientWidth, context.canvas.clientHeight);
+        ++count;
+        if (count >= (absolute_draw_mode ? absolute_y : y)) {
+            count = 0;
+        }
+        shift_y();
+        clone_y(count);
+        for (let i = 0; i < x; ++i) {
+            for (let c = 0; c < y; ++c) {
+                if (point[i * y + c]) {
+                    drawpoint(x_p[i], y_p[c]);
+                }
+            }
+        }
+        ++tick;
+    }
+
+    function run_convert() {
+        if (!mode) {
+            return;
+        }
+        context.clearRect(0, 0, context.canvas.clientWidth, context.canvas.clientHeight);
+        let bw = w;
+        w = 1;
+        for (let i = 0; i < x; ++i) {
+            for (let c = 0; c < (absolute_draw_mode ? absolute_y : y); ++c) {
+                if (point_draw[i * (absolute_draw_mode ? absolute_y : y) + c]) {
+                    if (absolute_draw_mode) {
+                        drawpoint(x_p[i], c);
+                    }
+                    else {
+                        drawpoint(x_p[i], y_p[c]);
+                    }
+                }
+            }
+        }
+        w = bw;
+    }
+
+    function gravitational_accelaration_height(t) {
+        return 0.5 * GA * t * t;
+    }
+
+    function relative_convert() {
+        if (typeof point_draw == 'undefined') {
+            let point_buffer = new ArrayBuffer(x * y);
+            point_draw = new Uint8Array(point_buffer);
+        }
+        if (mode == true) {
+            do {
+                if (buffer_draw_x.length == 0) {
+                    break;
+                }
+                change_near_point(buffer_draw_x.shift(), buffer_draw_y.shift());
+            } while (true)
+            context.clearRect(0, 0, context.canvas.clientWidth, context.canvas.clientHeight);
+            run_convert();
+            save();
+        } else {
+            alert('お絵描きモードのときのみ変換できます。');
+        }
+    }
+
+    let absolute_draw_mode = false;
+    let absolute_y;
+    function absolute_convert() {
+        if (typeof point_draw == 'undefined') {
+            let point_buffer = new ArrayBuffer(x * MAXHEIGHT);
+            point_draw = new Uint8Array(point_buffer);
+            absolute_y = MAXHEIGHT;
+            absolute_draw_mode = true;
+        }
+        if (mode == true) {
+            for (; ;) {
+                if (buffer_draw_x.length == 0) {
+                    break;
+                }
+                change_point(buffer_draw_x.shift(), buffer_draw_y.shift());
+            }
+            context.clearRect(0, 0, context.canvas.clientWidth, context.canvas.clientHeight);
+            run_convert();
+            save();
+        } else {
+            alert('お絵描きモードのときのみ変換できます。');
+        }
+    }
+
+    function reset() {
+        for (let ix = 0; ix < x; ++ix) {
+            for (let iy = 0; iy < y; ++iy) {
+                point_draw[(ix * y) + iy] = 0;
+            }
+        }
+        run_convert();
+    }
+    let save_point;
+
+    /**
+     * データの保存を行う。
+     */
+    function save() {
+        let point_buffer = new ArrayBuffer(x * (absolute_draw_mode ? absolute_y : y));
+        save_point = new Uint8Array(point_buffer);
+        for (let ix = 0; ix < x; ++ix) {
+            for (let iy = 0; iy < (absolute_draw_mode ? absolute_y : y); ++iy) {
+                save_point[(ix * (absolute_draw_mode ? absolute_y : y)) + ((absolute_draw_mode ? absolute_y : y) - iy)] = point_draw[(ix * (absolute_draw_mode ? absolute_y : y)) + iy];
+            }
+        }
+    }
+    let buffer_draw_x = [];
+    let buffer_draw_y = [];
+    let point_draw;
+
+    function change_near_point(dx, dy) {
+        let near_x_p = 0;
+        for (let i = 0; i < x - 1; ++i) {
+            if (x_p[i] <= dx && dx < x_p[i + 1]) {
+                near_x_p = i;
+                break;
+            }
+        }
+        let near_y_p = 0;
+        for (let i = 0; i < y; ++i) {
+            if (y_p[i] <= dy && dy < y_p[i + 1]) {
+                near_y_p = i;
+                break;
+            }
+        }
+        point_draw[near_x_p * y + near_y_p] = 1;
+    }
+    function change_point(dx, dy) {
+        let near_x_p = 0;
+        for (let i = 0; i < x - 1; ++i) {
+            if (x_p[i] <= dx && dx < x_p[i + 1]) {
+                near_x_p = i;
+                break;
+            }
+        }
+        point_draw[near_x_p * (absolute_draw_mode ? absolute_y : y) + dy] = 1;
+    }
+
+    // 1回目の開始部分のみ記録
+    let first_rendering_buffer = [];
+    // 2回目以降の繰り返し部分は重なっているので別途記録
+    let rendering_buffer = [];
+    let cycle_flag = false;
+    /**
+     * プリレンダリングを行う
+    */
+    function pre_rendering() {
+        // 初期化
+        first_rendering_buffer = [];
+        rendering_buffer = [];
+
+        add_log('プリレンダリング開始');
+        setTimeout(pre_rendering_run, 0, 0)
+    }
+    function add_x(add_x) {
+        if ((y) * add_x >= x * y) {
+            return;
+        }
+        point[(y) * add_x] = 1;
+    }
+    let randam_seeder = 0;
+    function pre_rendering_run(count) {
+        add_log('プリレンダリング中 ... ' + count);
+        // 一周したかどうかの判定
+        if (count >= (absolute_draw_mode ? absolute_y : y)) {
+            count = 0;
+            if (cycle_flag) {
+                // 2週目に入った場合は終了
+                add_log('初回起動分レンダリング数 : ' + first_rendering_buffer.length);
+                add_log('二重再生分レンダリング数 : ' + rendering_buffer.length);
+
+                return;
+            }
+            cycle_flag = true;
+        }
+        // マップシフト
+        shift_y();
+        // データの取得
+        clone_y(count);
+        // レンダリング
+        context.clearRect(0, 0, context.canvas.clientWidth, context.canvas.clientHeight);
+        for (let i = 0; i < x; ++i) {
+            for (let j = 0; j < y; ++j) {
+                if (point[i * y + j]) {
+                    drawpoint(x_p[i], y_p[j]);
+                }
+            }
+        }
+
+        // add_x(count);
+        // 記録
+        if (cycle_flag == false) {
+            first_rendering_buffer.push(context.getImageData(0, 0, MAXWIDTH - w, MAXHEIGHT - w));
+        }
+        else {
+            rendering_buffer.push(context.getImageData(0, 0, MAXWIDTH - w, MAXHEIGHT - w));
+        }
+        setTimeout(pre_rendering_run, 0, ++count);
+    }
+    let memory_played = false;
+    function play_rendered_memory() {
+        if (first_rendering_buffer.length == 0) {
+            alert('レンダリングされたデータがありません。\nプレレンダリングを押してから実行してください。');
+        }
+        let mbuton = document.getElementById('memory_mode');
+        memory_played = !memory_played;
+        if (memory_played == true) {
+            mbuton.innerText = '停止';
+            add_log('レンダリング済みのデータを再生します。');
+            setTimeout(run_pre_rendering, 16, 0, true);
+        }
+        else {
+            add_log('レンダリング済みのデータの再生を停止します。');
+            mbuton.innerText = '再生';
+        }
+
+
+    }
+    function run_pre_rendering(counter, first_flag) {
+        if (memory_played) {
+            if (first_flag) {
+                add_log('初回再生 : ' + counter);
+                context.putImageData(first_rendering_buffer[counter], 0, 0);
+                if (counter + 1 >= first_rendering_buffer.length) {
+                    counter = 0;
+                    first_flag = false;
+                }
+            }
+            else {
+                add_log('二重再生 : ' + counter);
+                context.putImageData(rendering_buffer[counter], 0, 0);
+                if (counter + 1 >= rendering_buffer.length) {
+                    counter = 0;
+                }
+            }
+            setTimeout(run_pre_rendering, 8, ++counter, first_flag);
+        }
+    }
+
+
+
+
+
+
+    let buffer_x = [];
+    let buffer_y = [];
+    // 点の描画
+    function drawpoint(dx, dy) {
+        // buffer_x.push(dx);
+        // buffer_y.push(dy);
+        context.beginPath();
+        //context.fillStyle = 'rgb(150, 90, 200)';
+        context.fillStyle = 'rgb(' + (dy / 3) + ' , 90, ' + (255 - (dx / 8)) + ')';
+        //context.strokeStyle = 'rgb(150, 90, 200)';
+        context.fillRect(dx, dy, w, w);
+        context.stroke();
+
+        // context.arc(dx, dy, w, 0, Math.PI * 2, true);
+        // context.fillStyle = 'rgb(200, 130, 250)';
+        // context.fill();
+        // context.lineWidth = 2;
+        // context.stroke();
+    }
+
+    // 点の消去
+    function clearRectangle() {
+        do {
+            if (buffer_x.length == 0) {
+                break;
+            }
+            context.beginPath();
+            //context.arc(dx, dy, w, 0, Math.PI * 2, true);
+            context.fillStyle = 'rgb(0, 0, 0)';
+            context.strokeStyle = 'rgb(0, 0, 0)';
+            context.fillRect(dx, dy, w, w);
+            context.stroke();
+
+            // context.fillStyle = 'rgb(0, 0, 0)';
+            // context.fill();
+        } while (true);
+    }
+    // 点の描画
+    function draw_point(dx, dy) {
+        let db = dx;
+        for (let i = 0; i < 10; ++i) {
+            dx = db;
+            ++dy;
+            for (let j = 0; j < 10; ++j) {
+                ++dx;
+                context.beginPath();
+                context.fillStyle = 'rgb(150, 90, 200)';
+                context.strokeStyle = 'rgb(150, 90, 200)';
+                context.fillRect(dx, dy, w, w);
+                context.stroke();
+                buffer_draw_x.push(dx);
+                buffer_draw_y.push(dy);
+            }
+        }
+    }
+
+    // 一点のみの描画
+    function direct_draw_point(dx, dy) {
+        for (let i = 0; i < 1; ++i) {
+            for (let j = 0; j < 1; ++j) {
+                context.beginPath();
+                context.fillStyle = 'rgb(150, 90, 200)';
+                context.strokeStyle = 'rgb(150, 90, 200)';
+                context.fillRect(dx, dy, 1, 1);
+                context.stroke();
+                buffer_draw_x.push(dx);
+                buffer_draw_y.push(dy);
+            }
+        }
+    }
+    // 画像読み込みに関する追加実装
+
+    // ファイルデータをbinaryに変換
+    function handleFileSelect(evt) {
+        console.log('handleFileSelect');
+        var files = evt.target.files
+        for (var i = 0, f; f = files[i]; i++) {
+            var reader = new FileReader()
+            reader.onload = (function (theFile) {
+                return function (e) {
+                    getInfo(e.target.result)
+                }
+            })(f)
+            reader.readAsDataURL(f)
+        }
+    }
+
+    // イベント付与 : ファイルが読み込まれたらデータ変換を行う
+    document.getElementById('image_file').addEventListener('change', handleFileSelect, false)
+
+    // binaryを画像データに変換
+    function getInfo(pic) {
+        var ctxt = canvas.getContext('2d');
+        var img = new Image;
+        img.src = pic;
+        img.onload = function () {
+            ctxt.drawImage(img, 0, 0);
+            var data = ctxt.getImageData(0, 0, img.width, img.height).data;
+            image_width = img.width;
+            image_height = img.height;
+            canvas.width = img.width;
+            canvas.height = img.height;
+            var img2 = new Image;
+            img2.src = pic;
+            img2.onload = function () {
+                ctxt.drawImage(img, 0, 0);
+                var data = ctxt.getImageData(0, 0, img.width, img.height).data;
+                console.log(data);
+                console.log(data.length);
+                image_width = img.width;
+                image_height = img.height;
+                var red = data[0],
+                    green = data[1],
+                    blue = data[2];
+                console.log("hight is " + img.height + "px,width is " + img.width + "px,pix(1,1)'s r:" + red + ',g:' + green + ',b:' + blue);
+                if (img.height == canvas_size[size_select][0] && img.width == canvas_size[size_select][1]) {
+                    edit_image(data);
+                }
+                else {
+                    console.log('画像の解像度が一致しません。一般的な16:9の比率の画像を使用してください。');
+                    return;
+                }
+            }
+        }
+
+    }
+
+    let image_width = 0;
+    let image_height = 0;
+    let red_element;
+    let blue_element;
+    let green_element;
+    let normal_canvas = document.getElementById('normal_canvas');
+    let red_canvas = document.getElementById('red_canvas');
+    let blue_canvas = document.getElementById('blue_canvas');
+    let green_canvas = document.getElementById('green_canvas');
+    let normal_cx = normal_canvas.getContext('2d');
+    let red_cx = red_canvas.getContext('2d');
+    let blue_cx = blue_canvas.getContext('2d');
+    let green_cx = green_canvas.getContext('2d');
+    /**
+     * r g b a 
+     *  -> ->  x方向が優先
+     * そのあとにy方向
+     *   
+     * 
+     */
+    let timer;
+    let dy = 0;
+
+    function edit_image(data) {
+        let all_length = data.length / 4;
+
+        let red_buffer = new ArrayBuffer(all_length);
+        red_element = new Uint8Array(red_buffer);
+        let blue_buffer = new ArrayBuffer(all_length);
+        blue_element = new Uint8Array(blue_buffer);
+        let green_buffer = new ArrayBuffer(all_length);
+        green_element = new Uint8Array(green_buffer);
+
+
+        red_canvas.width = image_width;
+        red_canvas.height = image_height;
+
+        blue_canvas.width = image_width;
+        blue_canvas.height = image_height;
+
+        green_canvas.width = image_width;
+        green_canvas.height = image_height;
+
+
+        normal_canvas.width = image_width;
+        normal_canvas.height = image_height;
+
+        for (let i = 0; i < all_length; ++i) {
+            red_element[i] = data[(i * 4)];
+            green_element[i] = data[(i * 4) + 1];
+            blue_element[i] = data[(i * 4) + 2];
+        }
+        red_cx.clearRect(0, 0, image_width, image_height);
+        green_cx.clearRect(0, 0, image_width, image_height);
+        blue_cx.clearRect(0, 0, image_width, image_height);
+        normal_cx.clearRect(0, 0, image_width, image_height);
+
+
+        red_cx.fillStyle = "rgb(128, 128, 128)";
+        red_cx.fillRect(0, 0, image_width, image_height);
+        green_cx.fillStyle = "rgb(128, 128, 128)";
+        green_cx.fillRect(0, 0, image_width, image_height);
+        blue_cx.fillStyle = "rgb(128, 128, 128)";
+        blue_cx.fillRect(0, 0, image_width, image_height);
+        normal_cx.fillStyle = "rgb(128, 128, 128)";
+        normal_cx.fillRect(0, 0, image_width, image_height);
+
+        let red_img_data_buffer = new ArrayBuffer(all_length * 4);
+        let red_img_data = new Uint8Array(red_img_data_buffer);
+        let red_imageData = red_cx.createImageData(image_width, image_height);
+        for (let i = 0; i < all_length; ++i) {
+            red_imageData.data[i * 4] = red_element[i];
+            red_imageData.data[i * 4 + 1] = 0;
+            red_imageData.data[i * 4 + 2] = 0;
+            red_imageData.data[i * 4 + 3] = 255;
+        }
+        red_cx.putImageData(red_imageData, 0, 0); /// put data to canvas
+
+
+        let green_imageData = green_cx.createImageData(image_width, image_height);
+        for (let i = 0; i < all_length; ++i) {
+            green_imageData.data[i * 4] = 0;
+            green_imageData.data[i * 4 + 1] = green_element[i];
+            green_imageData.data[i * 4 + 2] = 0;
+            green_imageData.data[i * 4 + 3] = 255;
+        }
+        green_cx.putImageData(green_imageData, 0, 0); /// put data to canvas
+
+
+        let blue_imageData = blue_cx.createImageData(image_width, image_height);
+        for (let i = 0; i < all_length; ++i) {
+            blue_imageData.data[i * 4] = 0;
+            blue_imageData.data[i * 4 + 1] = 0;
+            blue_imageData.data[i * 4 + 2] = blue_element[i];
+            blue_imageData.data[i * 4 + 3] = 255;
+        }
+        blue_cx.putImageData(blue_imageData, 0, 0); /// put data to canvas
+
+        let normal_imageData = normal_cx.createImageData(image_width, image_height);
+        for (let i = 0; i < all_length; ++i) {
+            normal_imageData.data[i * 4] = red_element[i];
+            normal_imageData.data[i * 4 + 1] = green_element[i];
+            normal_imageData.data[i * 4 + 2] = blue_element[i];
+            // 通常の画像の生成がここで行われる。ここで黒色であるものをCanvasに描画する
+            if (red_element[i] == 0 && green_element[i] == 0 && blue_element[i] == 0) {
+                direct_draw_point(i % image_width, i / image_height);
+            }
+            normal_imageData.data[i * 4 + 3] = 255;
+        }
+        normal_cx.putImageData(normal_imageData, 0, 0); /// put data to canvas
+    }
+    function render(hx, hy) {
+        let x = hx;
+        let y = hy;
+        if (!(y < image_height)) {
+            return;
+        }
+        for (let x = 0; x < image_width; ++x) {
+            let i = (y * image_width) + x;
+            red_cx.fillStyle = "rgb(" + red_element[i] + ", 0, 0)";
+            red_cx.fillRect(x, y, 1, 1);
+            green_cx.fillStyle = "rgb(0, " + green_element[i] + ", 0)";
+            green_cx.fillRect(x, y, 1, 1);
+            blue_cx.fillStyle = "rgb(0, 0, " + blue_element[i] + ")";
+            blue_cx.fillRect(x, y, 1, 1);
+            normal_cx.fillStyle = "rgba(" + red_element[i] + ", " + green_element[i] + ", " + blue_element[i] + ", " + alpha_element[i] + ")";
+            normal_cx.fillRect(x, y, 1, 1);
+        }
+        setTimeout(render, 0, 0, ++y);
+    }
+
+    function get_buffer_type(buffer) {
+        let buffer_length = buffer.length;
+        let buffer_type = [];
+        let buffer_type_length = 0;
+        for (let i = 0; i < buffer_length; ++i) {
+            let inserted = false;
+            for (let j = 0; j < buffer_type_length; ++j) {
+                if (buffer[i] == buffer_type[j][0]) {
+                    ++buffer_type[j][1];
+                    inserted = true;
+                    break;
+                }
+            }
+            if (inserted) {
+                continue;
+            }
+            buffer_type.push([buffer[i], 1]);
+            ++buffer_type_length;
+        }
+        console.log(buffer_type);
+        return (buffer_type);
+    }
+</script>
+
+</html>
